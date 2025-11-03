@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Version information (updated by CI)
+VERSION="dev"
+
 # Default values
 ARCH="amd64"
 INPUT_FILE=""
@@ -9,14 +12,15 @@ INPUT_FILE=""
 # Usage function
 usage() {
     cat << EOF
-Usage: image-digest [OPTIONS] [IMAGE]
+image-digest $VERSION - Resolve container image tags to SHA256 digests
 
-Resolve container image tags to SHA256 digests.
+Usage: image-digest [OPTIONS] [IMAGE]
 
 Options:
     -f, --file FILE     Input file (use '-' for stdin, or path to file/directory)
     -a, --arch ARCH     Architecture (default: amd64)
     -h, --help          Show this help message
+    -v, --version       Show version information
 
 Examples:
     helm template . | image-digest -f -
@@ -24,6 +28,12 @@ Examples:
     image-digest -f file.yaml
     image-digest ubuntu:25.10
 EOF
+    exit 0
+}
+
+# Version function
+show_version() {
+    echo "image-digest version $VERSION"
     exit 0
 }
 
@@ -41,6 +51,9 @@ parse_args() {
                 ;;
             -h|--help)
                 usage
+                ;;
+            -v|--version)
+                show_version
                 ;;
             *)
                 # Treat as direct image name
