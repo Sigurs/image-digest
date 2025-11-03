@@ -56,18 +56,18 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Release ${{ steps.tag.outputs.tag }}
           body: |
-            Automated release of image-hashes script.
+            Automated release of image-digest script.
 
             **Changes:** See commit history for details.
 
             **Usage:**
             ```bash
-            curl -O https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/image-hashes
-            chmod +x image-hashes
-            ./image-hashes --help
+            curl -O https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/image-digest
+            chmod +x image-digest
+            ./image-digest --help
             ```
           files: |
-            image-hashes
+            image-digest
           draft: false
           prerelease: false
         env:
