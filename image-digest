@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Default values
+ARCH="amd64"
+INPUT_FILE=""
+
+# Usage function
+usage() {
+    cat << EOF
+Usage: image-digest [OPTIONS] [IMAGE]
+
+Resolve container image tags to SHA256 digests.
+
+Options:
+    -f, --file FILE     Input file (use '-' for stdin, or path to file/directory)
+    -a, --arch ARCH     Architecture (default: amd64)
+    -h, --help          Show this help message
+
+Examples:
+    helm template . | image-digest -f -
+    image-digest -f yamls/
+    image-digest -f file.yaml
+    image-digest ubuntu:25.10
+EOF
+    exit 0
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -f|--file)
+                INPUT_FILE="$2"
+                shift 2
+                ;;
+            -a|--arch)
+                ARCH="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                ;;
+            *)
+                # Treat as direct image name
+                INPUT_FILE=""
+                DIRECT_IMAGE="$1"
+                shift
+                ;;
+        esac
+    done
+}
+
+# Get Docker credentials from ~/.docker/config.json
+get_docker_auth() {
+    local registry="$1"
+    local config_file="$HOME/.docker/config.json"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo ""
+        return
+    fi
+
+    # Try to find auth for this registry
+    local auth=""
+
+    # Check auths section
+    auth=$(jq -r --arg reg "$registry" '.auths[$reg].auth // empty' "$config_file" 2>/dev/null || echo "")
+
+    if [[ -n "$auth" ]]; then
+        echo "$auth"
+        return
+    fi
+
+    # Check credHelpers (like docker-credential-desktop)
+    local cred_helper=$(jq -r --arg reg "$registry" '.credHelpers[$reg] // empty' "$config_file" 2>/dev/null || echo "")
+
+    if [[ -n "$cred_helper" ]]; then
+        # Try to use credential helper
+        if command -v "docker-credential-$cred_helper" &> /dev/null; then
+            auth=$(echo "$registry" | docker-credential-"$cred_helper" get 2>/dev/null | jq -r 'if .Username and .Secret then (.Username + ":" + .Secret) | @base64 else empty end' || echo "")
+            echo "$auth"
+            return
+        fi
+    fi
+
+    # Check global credsStore
+    local creds_store=$(jq -r '.credsStore // empty' "$config_file" 2>/dev/null || echo "")
+
+    if [[ -n "$creds_store" ]]; then
+        if command -v "docker-credential-$creds_store" &> /dev/null; then
+            auth=$(echo "$registry" | docker-credential-"$creds_store" get 2>/dev/null | jq -r 'if .Username and .Secret then (.Username + ":" + .Secret) | @base64 else empty end' || echo "")
+            echo "$auth"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
+# Normalize registry name
+normalize_registry() {
+    local image="$1"
+
+    # If no registry specified, use docker.io
+    if [[ ! "$image" =~ / ]] || [[ "$image" =~ ^[^./]+$ ]]; then
+        echo "registry-1.docker.io"
+        return
+    fi
+
+    local registry="${image%%/*}"
+
+    # Check if it looks like a registry (contains . or :)
+    if [[ "$registry" =~ [.:] ]]; then
+        # Normalize docker.io to registry-1.docker.io
+        if [[ "$registry" == "docker.io" ]]; then
+            echo "registry-1.docker.io"
+        else
+            echo "$registry"
+        fi
+    else
+        # No registry in image name, default to docker.io
+        echo "registry-1.docker.io"
+    fi
+}
+
+# Parse image into components
+parse_image() {
+    local image="$1"
+    local registry=""
+    local repository=""
+    local tag="latest"
+
+    # Extract registry
+    if [[ "$image" =~ / ]]; then
+        local first_part="${image%%/*}"
+        if [[ "$first_part" =~ [.:] ]]; then
+            registry="$first_part"
+            image="${image#*/}"
+        fi
+    fi
+
+    # Default registry
+    if [[ -z "$registry" ]]; then
+        registry="registry-1.docker.io"
+    elif [[ "$registry" == "docker.io" ]]; then
+        registry="registry-1.docker.io"
+    fi
+
+    # Extract tag
+    if [[ "$image" =~ : ]]; then
+        repository="${image%:*}"
+        tag="${image##*:}"
+    else
+        repository="$image"
+    fi
+
+    # For Docker Hub, add library/ prefix if no namespace
+    if [[ "$registry" == "registry-1.docker.io" ]] && [[ ! "$repository" =~ / ]]; then
+        repository="library/$repository"
+    fi
+
+    echo "$registry|$repository|$tag"
+}
+
+# Get authentication token from registry
+get_registry_token() {
+    local registry="$1"
+    local repository="$2"
+    local auth="$3"
+
+    local auth_header=""
+    if [[ -n "$auth" ]]; then
+        auth_header="-H \"Authorization: Basic $auth\""
+    fi
+
+    # Determine auth endpoint
+    local auth_url=""
+    local service=""
+    local scope="repository:$repository:pull"
+
+    case "$registry" in
+        registry-1.docker.io)
+            auth_url="https://auth.docker.io/token"
+            service="registry.docker.io"
+            ;;
+        quay.io)
+            # Quay.io uses different auth
+            auth_url="https://quay.io/v2/auth"
+            service="quay.io"
+            ;;
+        *)
+            # Try generic v2 auth discovery
+            local www_auth=$(curl -sSL -i "https://$registry/v2/" 2>/dev/null | grep -i "www-authenticate:" | head -1 || echo "")
+
+            if [[ "$www_auth" =~ Bearer\ realm=\"([^\"]+)\" ]]; then
+                auth_url="${BASH_REMATCH[1]}"
+            fi
+
+            if [[ "$www_auth" =~ service=\"([^\"]+)\" ]]; then
+                service="${BASH_REMATCH[1]}"
+            fi
+            ;;
+    esac
+
+    if [[ -z "$auth_url" ]]; then
+        echo ""
+        return
+    fi
+
+    # Get token
+    local token_response=""
+    if [[ -n "$auth" ]]; then
+        token_response=$(curl -sSL "$auth_url?service=$service&scope=$scope" -H "Authorization: Basic $auth" 2>/dev/null || echo "")
+    else
+        token_response=$(curl -sSL "$auth_url?service=$service&scope=$scope" 2>/dev/null || echo "")
+    fi
+
+    local token=$(echo "$token_response" | jq -r '.token // .access_token // empty' 2>/dev/null || echo "")
+    echo "$token"
+}
+
+# Get SHA256 digest for an image
+get_image_digest() {
+    local image="$1"
+
+    # Parse image
+    IFS='|' read -r registry repository tag <<< "$(parse_image "$image")"
+
+    # Get auth
+    local auth=$(get_docker_auth "$registry")
+
+    # Get token
+    local token=$(get_registry_token "$registry" "$repository" "$auth")
+
+    # Prepare headers
+    local auth_header=""
+    if [[ -n "$token" ]]; then
+        auth_header="-H \"Authorization: Bearer $token\""
+    elif [[ -n "$auth" ]]; then
+        auth_header="-H \"Authorization: Basic $auth\""
+    fi
+
+    # Get manifest
+    local manifest_url="https://$registry/v2/$repository/manifests/$tag"
+    local accept_header="Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json"
+
+    local response=""
+    if [[ -n "$token" ]]; then
+        response=$(curl -sSL "$manifest_url" \
+            -H "Authorization: Bearer $token" \
+            -H "$accept_header" \
+            -i 2>/dev/null || echo "")
+    elif [[ -n "$auth" ]]; then
+        response=$(curl -sSL "$manifest_url" \
+            -H "Authorization: Basic $auth" \
+            -H "$accept_header" \
+            -i 2>/dev/null || echo "")
+    else
+        response=$(curl -sSL "$manifest_url" \
+            -H "$accept_header" \
+            -i 2>/dev/null || echo "")
+    fi
+
+    # Check HTTP status code
+    local http_status=$(echo "$response" | grep -E "^HTTP/" | tail -1 | cut -d' ' -f2)
+
+    # Handle HTTP errors
+    if [[ "$http_status" == "401" ]] || [[ "$http_status" == "403" ]]; then
+        echo "Error: Authentication failed for $image (HTTP $http_status)" >&2
+        echo "       Check credentials in ~/.docker/config.json" >&2
+        return 1
+    elif [[ "$http_status" == "404" ]]; then
+        echo "Error: Image not found: $image (HTTP 404)" >&2
+        return 1
+    elif [[ -n "$http_status" ]] && [[ "$http_status" != "200" ]]; then
+        echo "Error: Failed to fetch manifest for $image (HTTP $http_status)" >&2
+        return 1
+    fi
+
+    # Parse response body to check if it's a manifest list
+    local body=$(echo "$response" | sed '1,/^\r$/d')
+    local media_type=$(echo "$body" | jq -r '.mediaType // empty' 2>/dev/null || echo "")
+    local digest=""
+
+    # Check if it's a manifest list (multi-architecture image)
+    if [[ "$media_type" == *"manifest.list"* ]] || [[ "$media_type" == *"image.index"* ]]; then
+        # Find the manifest for our architecture
+        digest=$(echo "$body" | jq -r --arg arch "$ARCH" '.manifests[] | select(.platform.architecture == $arch) | .digest' 2>/dev/null | head -1 || echo "")
+
+        if [[ -z "$digest" ]]; then
+            echo "Error: Architecture '$ARCH' not found for $image" >&2
+            return 1
+        fi
+    else
+        # Single manifest, extract from Docker-Content-Digest header
+        digest=$(echo "$response" | grep -i "docker-content-digest:" | head -1 | cut -d' ' -f2 | tr -d '\r\n' || echo "")
+    fi
+
+    # Output in the format: registry/repository:tag@digest
+    if [[ -n "$digest" ]]; then
+        echo "$registry/$repository:$tag@$digest"
+    else
+        echo "Error: Could not resolve digest for $image" >&2
+        echo "       This might be due to network issues or an unsupported registry" >&2
+        return 1
+    fi
+}
+
+# Extract images from YAML content
+extract_images_from_yaml() {
+    local content="$1"
+
+    # Use kislyuk/yq (Python-based, jq wrapper)
+    echo "$content" | yq -r '.. | objects | select(has("image")) | .image' 2>/dev/null | grep -v "^null$" | sort -u
+}
+
+# Process input
+process_input() {
+    local images=()
+
+    if [[ -n "${DIRECT_IMAGE:-}" ]]; then
+        # Direct image name provided
+        images=("$DIRECT_IMAGE")
+    elif [[ "$INPUT_FILE" == "-" ]]; then
+        # Read from stdin
+        local content=$(cat)
+        mapfile -t images < <(extract_images_from_yaml "$content")
+    elif [[ -d "$INPUT_FILE" ]]; then
+        # Directory of YAML files
+        local content=""
+        while IFS= read -r -d '' file; do
+            content+=$'\n'"$(cat "$file")"
+        done < <(find "$INPUT_FILE" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0)
+        mapfile -t images < <(extract_images_from_yaml "$content")
+    elif [[ -f "$INPUT_FILE" ]]; then
+        # Single file
+        local content=$(cat "$INPUT_FILE")
+        mapfile -t images < <(extract_images_from_yaml "$content")
+    else
+        echo "Error: Invalid input" >&2
+        exit 1
+    fi
+
+    # Process each image
+    for image in "${images[@]}"; do
+        if [[ -n "$image" ]]; then
+            get_image_digest "$image"
+        fi
+    done
+}
+
+# Check dependencies
+check_dependencies() {
+    local missing_deps=()
+
+    if ! command -v jq &> /dev/null; then
+        missing_deps+=("jq")
+    fi
+
+    if ! command -v curl &> /dev/null; then
+        missing_deps+=("curl")
+    fi
+
+    if ! command -v yq &> /dev/null; then
+        missing_deps+=("yq")
+    fi
+
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo "Error: Missing required dependencies: ${missing_deps[*]}" >&2
+        echo "" >&2
+        echo "Please install the missing dependencies:" >&2
+        echo "  - jq: JSON processor" >&2
+        echo "  - curl: HTTP client" >&2
+        echo "  - yq: YAML processor (kislyuk/yq - Python-based jq wrapper)" >&2
+        echo "    https://github.com/kislyuk/yq" >&2
+        echo "" >&2
+        echo "On Arch Linux:" >&2
+        echo "  sudo pacman -S jq curl yq" >&2
+        echo "" >&2
+        echo "On Debian/Ubuntu:" >&2
+        echo "  sudo apt install jq curl yq" >&2
+        echo "" >&2
+        echo "On macOS:" >&2
+        echo "  brew install jq curl yq" >&2
+        echo "" >&2
+        echo "Note: This script requires kislyuk/yq (the Python-based jq wrapper)," >&2
+        echo "not mikefarah/yq (the Go-based tool). On most systems, 'apt install yq'" >&2
+        echo "or 'pacman -S yq' will install the correct version." >&2
+        exit 1
+    fi
+}
+
+# Main
+main() {
+    check_dependencies
+    parse_args "$@"
+    process_input
+}
+
+main "$@"
