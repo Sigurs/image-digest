@@ -1,0 +1,74 @@
+name: Create Release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'image-hashes'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+
+      - name: Get commit count today
+        id: count
+        run: |
+          TODAY=$(date +'%Y-%m-%d')
+          COUNT=$(git log --since="$TODAY 00:00:00" --oneline | wc -l)
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+
+      - name: Create release tag
+        id: tag
+        run: |
+          TAG="v${{ steps.date.outputs.date }}-${{ steps.count.outputs.count }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Update version in script
+        run: |
+          sed -i 's/^VERSION="dev"$/VERSION="${{ steps.tag.outputs.tag }}"/' image-digest
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add image-digest
+          git commit -m "Update version to ${{ steps.tag.outputs.tag }}" || true
+          git tag -a "${{ steps.tag.outputs.tag }}" -m "Release ${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          body: |
+            Automated release of image-hashes script.
+
+            **Changes:** See commit history for details.
+
+            **Usage:**
+            ```bash
+            curl -O https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/image-hashes
+            chmod +x image-hashes
+            ./image-hashes --help
+            ```
+          files: |
+            image-hashes
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
