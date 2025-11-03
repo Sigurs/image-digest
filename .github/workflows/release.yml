@@ -5,7 +5,7 @@ on:
     branches:
       - master
     paths:
-      - 'image-hashes'
+      - 'image-digest'
 
 permissions:
   contents: write

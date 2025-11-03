@@ -12,7 +12,7 @@ INPUT_FILE=""
 # Usage function
 usage() {
     cat << EOF
-image-digest $VERSION - Resolve container image tags to SHA256 digests
+image-digest $VERSION - Resolve container image tags to SHA256 digests.
 
 Usage: image-digest [OPTIONS] [IMAGE]
 
