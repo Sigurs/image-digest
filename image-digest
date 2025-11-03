@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Version information (updated by CI)
-VERSION="dev"
+VERSION="v2025.11.03-8"
 
 # Default values
 ARCH="amd64"
