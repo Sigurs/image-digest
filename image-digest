@@ -13,6 +13,8 @@ INPUT_FILE=""
 usage() {
     cat << EOF
 image-digest $VERSION - Resolve container image tags to SHA256 digests.
+Source: https://github.com/sigurs/image-digest
+Licensed under MIT License - Copyright (c) 2025 Niklas Lindgren
 
 Usage: image-digest [OPTIONS] [IMAGE]
 
