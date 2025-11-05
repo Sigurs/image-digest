@@ -6,7 +6,7 @@ One huge requirement for me was to keep this easily transferable, thus a bash sc
 Notable features: 
  - Uses `$HOME/.docker/config.json` as credential source.  
  - Defaults to latest if no tag is given.  
- - Supports different architectures with --arch.
+ - Supports different architectures with --arch.  
 
 Usage:  
 ```
