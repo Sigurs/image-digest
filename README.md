@@ -1,4 +1,4 @@
-#  image-hashes
+#  image-digest
 The purpose of this project is to take an input of yaml file(s) and then output all the images, tags and fetches their sha256 digests.  
 Depends on curl, jq and yq (kislyuk variant).  
 One huge requirement for me was to keep this easily transferable, thus a bash script.  
@@ -11,13 +11,13 @@ Notable features:
 Usage:  
 ```
 # Input, option 1
-helm template . | image-hashes -f -
+helm template . | image-digest -f -
 # Input, option 2
-image-hashes -f yamls/
+image-digest -f yamls/
 # Input, option 3
-image-hashes -f file.yaml
+image-digest -f file.yaml
 # Input, option 4
-image-hashes ubuntu:25.10
+image-digest ubuntu:25.10
 
 # Output
 registry-1.docker.io/library/ubuntu:25.10@sha256:9b61739164b58f2263067bd3ab31c7746ded4cade1f9d708e6f1b047b408a470
