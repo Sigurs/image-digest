@@ -4,7 +4,7 @@ Depends on curl, jq and yq (kislyuk variant).
 One huge requirement for me was to keep this easily transferable, thus a bash script.  
 
 Notable features: 
- - Uses `$HOME/.docker/config.json` as credential sources when needed.  
+ - Uses `$HOME/.docker/config.json` as credential source.  
  - Defaults to latest if no tag is given.  
  - Supports different architectures with --arch.
 
